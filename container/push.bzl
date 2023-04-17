@@ -46,99 +46,110 @@ def _impl(ctx):
     digester_input = []
 
     # Parse and get destination registry to be pushed to
-    registry = ctx.expand_make_variables("registry", ctx.attr.registry, {})
+    opt_registry = ctx.expand_make_variables("registry", ctx.attr.registry, {})
     repository = ctx.expand_make_variables("repository", ctx.attr.repository, {})
 
-    # If a repository file is provided, override <repository> with tag value
-    if ctx.file.repository_file:
-        repository = "$(cat {})".format(_get_runfile_path(ctx, ctx.file.repository_file))
-        pusher_input.append(ctx.file.repository_file)
+    REGISTRIES = [
+        "index.docker.io",
+        "216690786812.dkr.ecr.us-west-2.amazonaws.com",
+    ]
+    if opt_registry:
+        REGISTRIES = [opt_registry]
 
-    tag = ctx.expand_make_variables("tag", ctx.attr.tag, {})
+    retval = []
+    for registry in REGISTRIES:
+        # If a repository file is provided, override <repository> with tag value
+        if ctx.file.repository_file:
+            repository = "$(cat {})".format(_get_runfile_path(ctx, ctx.file.repository_file))
+            pusher_input.append(ctx.file.repository_file)
 
-    # If a tag file is provided, override <tag> with tag value
-    if ctx.file.tag_file:
-        tag = "$(cat {})".format(_get_runfile_path(ctx, ctx.file.tag_file))
-        pusher_input.append(ctx.file.tag_file)
+        tag = ctx.expand_make_variables("tag", ctx.attr.tag, {})
 
-    stamp = ctx.attr.stamp[StampSettingInfo].value
-    stamp_inputs = [ctx.info_file, ctx.version_file] if stamp else []
-    for f in stamp_inputs:
-        pusher_args += ["-stamp-info-file", "%s" % _get_runfile_path(ctx, f)]
-    pusher_input += stamp_inputs
+        # If a tag file is provided, override <tag> with tag value
+        if ctx.file.tag_file:
+            tag = "$(cat {})".format(_get_runfile_path(ctx, ctx.file.tag_file))
+            pusher_input.append(ctx.file.tag_file)
 
-    # Construct container_parts for input to pusher.
-    image = _get_layers(ctx, ctx.label.name, ctx.attr.image)
-    pusher_img_args, pusher_img_inputs = _gen_img_args(ctx, image, _get_runfile_path)
-    pusher_args += pusher_img_args
-    pusher_input += pusher_img_inputs
-    digester_img_args, digester_img_inputs = _gen_img_args(ctx, image)
-    digester_input += digester_img_inputs
-    digester_args += digester_img_args
-    tarball = image.get("legacy")
-    if tarball:
-        print("Pushing an image based on a tarball can be very " +
-              "expensive. If the image set on %s is the output of a " % ctx.label +
-              "docker_build, consider dropping the '.tar' extension. " +
-              "If the image is checked in, consider using " +
-              "container_import instead.")
+        stamp = ctx.attr.stamp[StampSettingInfo].value
+        stamp_inputs = [ctx.info_file, ctx.version_file] if stamp else []
+        for f in stamp_inputs:
+            pusher_args += ["-stamp-info-file", "%s" % _get_runfile_path(ctx, f)]
+        pusher_input += stamp_inputs
 
-    pusher_args.append("--format={}".format(ctx.attr.format))
-    pusher_args.append("--dst={registry}/{repository}:{tag}".format(
-        registry = registry,
-        repository = repository,
-        tag = tag,
-    ))
+        # Construct container_parts for input to pusher.
+        image = _get_layers(ctx, ctx.label.name, ctx.attr.image)
+        pusher_img_args, pusher_img_inputs = _gen_img_args(ctx, image, _get_runfile_path)
+        pusher_args += pusher_img_args
+        pusher_input += pusher_img_inputs
+        digester_img_args, digester_img_inputs = _gen_img_args(ctx, image)
+        digester_input += digester_img_inputs
+        digester_args += digester_img_args
+        tarball = image.get("legacy")
+        if tarball:
+            print("Pushing an image based on a tarball can be very " +
+                  "expensive. If the image set on %s is the output of a " % ctx.label +
+                  "docker_build, consider dropping the '.tar' extension. " +
+                  "If the image is checked in, consider using " +
+                  "container_import instead.")
 
-    if ctx.attr.skip_unchanged_digest:
-        pusher_args.append("-skip-unchanged-digest")
-    if ctx.attr.insecure_repository:
-        pusher_args.append("-insecure-repository")
-    digester_args += ["--dst", str(ctx.outputs.digest.path), "--format", str(ctx.attr.format)]
-    ctx.actions.run(
-        inputs = digester_input,
-        outputs = [ctx.outputs.digest],
-        executable = ctx.executable._digester,
-        arguments = digester_args,
-        tools = ctx.attr._digester[DefaultInfo].default_runfiles.files,
-        mnemonic = "ContainerPushDigest",
-    )
-
-    # If the docker toolchain is configured to use a custom client config
-    # directory, use that instead
-    toolchain_info = ctx.toolchains["@io_bazel_rules_docker//toolchains/docker:toolchain_type"].info
-    if toolchain_info.client_config != "":
-        pusher_args += ["-client-config-dir", str(toolchain_info.client_config)]
-
-    pusher_runfiles = [ctx.executable._pusher] + pusher_input
-    runfiles = ctx.runfiles(files = pusher_runfiles)
-    runfiles = runfiles.merge(ctx.attr._pusher[DefaultInfo].default_runfiles)
-
-    exe = ctx.actions.declare_file(ctx.label.name + ctx.attr.extension)
-    ctx.actions.expand_template(
-        template = ctx.file.tag_tpl,
-        output = exe,
-        substitutions = {
-            "%{args}": " ".join(pusher_args),
-            "%{container_pusher}": _get_runfile_path(ctx, ctx.executable._pusher),
-        },
-        is_executable = True,
-    )
-
-    return [
-        DefaultInfo(
-            executable = exe,
-            runfiles = runfiles,
-        ),
-        OutputGroupInfo(
-            exe = [exe],
-        ),
-        PushInfo(
+        pusher_args.append("--format={}".format(ctx.attr.format))
+        pusher_args.append("--dst={registry}/{repository}:{tag}".format(
             registry = registry,
             repository = repository,
-            digest = ctx.outputs.digest,
-        ),
-    ]
+            tag = tag,
+        ))
+
+        if ctx.attr.skip_unchanged_digest:
+            pusher_args.append("-skip-unchanged-digest")
+        if ctx.attr.insecure_repository:
+            pusher_args.append("-insecure-repository")
+        digester_args += ["--dst", str(ctx.outputs.digest.path), "--format", str(ctx.attr.format)]
+        ctx.actions.run(
+            inputs = digester_input,
+            outputs = [ctx.outputs.digest],
+            executable = ctx.executable._digester,
+            arguments = digester_args,
+            tools = ctx.attr._digester[DefaultInfo].default_runfiles.files,
+            mnemonic = "ContainerPushDigest",
+        )
+
+        # If the docker toolchain is configured to use a custom client config
+        # directory, use that instead
+        toolchain_info = ctx.toolchains["@io_bazel_rules_docker//toolchains/docker:toolchain_type"].info
+        if toolchain_info.client_config != "":
+            pusher_args += ["-client-config-dir", str(toolchain_info.client_config)]
+
+        pusher_runfiles = [ctx.executable._pusher] + pusher_input
+        runfiles = ctx.runfiles(files = pusher_runfiles)
+        runfiles = runfiles.merge(ctx.attr._pusher[DefaultInfo].default_runfiles)
+
+        exe = ctx.actions.declare_file(ctx.label.name + ctx.attr.extension)
+        ctx.actions.expand_template(
+            template = ctx.file.tag_tpl,
+            output = exe,
+            substitutions = {
+                "%{args}": " ".join(pusher_args),
+                "%{container_pusher}": _get_runfile_path(ctx, ctx.executable._pusher),
+            },
+            is_executable = True,
+        )
+
+        retval += [
+            DefaultInfo(
+                executable = exe,
+                runfiles = runfiles,
+            ),
+            OutputGroupInfo(
+                exe = [exe],
+            ),
+            PushInfo(
+                registry = registry,
+                repository = repository,
+                digest = ctx.outputs.digest,
+            ),
+        ]
+
+    return retval
 
 container_push_ = rule(
     attrs = dicts.add({
@@ -163,8 +174,8 @@ container_push_ = rule(
             doc = "Whether the repository is insecure or not (http vs https)",
         ),
         "registry": attr.string(
-            mandatory = True,
-            doc = "The registry to which we are pushing.",
+            # mandatory = True,
+            doc = "The registry to which we are pushing, will default to RS defined default registry",
         ),
         "repository": attr.string(
             mandatory = True,
