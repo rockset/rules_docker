@@ -110,32 +110,54 @@ func main() {
 		}
 	}
 
-	stamper, err := compat.NewStamper(stampInfoFile)
-	if err != nil {
-		log.Fatalf("Failed to initialize the stamper: %v", err)
-	}
+	// HACK ALERT
+	// dst comes with repo and tag appended, but not to each comma separted value, just
+	// the last one
+	tag := strings.Split(*dst, ":")[1]
+	comma_separated_dst := strings.Split(*dst, ",")
+	last_dst_entry := comma_separated_dst[len(comma_separated_dst) - 1]
+	last_registry := strings.Split(last_dst_entry, "/")[0]
+	repo := strings.Replace(
+		strings.Split(last_dst_entry, ":")[0],
+		last_registry,
+		"",
+		1,
+	)
 
-	// Infer stamp info if provided and perform substitutions in the provided tag name.
-	stamped := stamper.Stamp(*dst)
-	if stamped != *dst {
-		log.Printf("Destination %s was resolved to %s after stamping.", *dst, stamped)
-	}
+	for _, dst_s := range strings.Split(*dst, ",") {
+		dst_s_tagged := dst_s
+		if ! strings.Contains(dst_s, ":") {
+			dst_s_tagged = fmt.Sprintf("%s%s:%s", dst_s, repo, tag)
+		}
 
-	digest, err := img.Digest()
-	if err != nil {
-		log.Printf("Failed to digest image: %v", err)
-	}
+		log.Printf("stampInfoFile: %s", stampInfoFile)
+		stamper, err := compat.NewStamper(stampInfoFile)
+		if err != nil {
+			log.Fatalf("Failed to initialize the stamper: %v", err)
+		}
 
-	if err := push(stamped, img); err != nil {
-		log.Fatalf("Error pushing image to %s: %v", stamped, err)
-	}
+		// Infer stamp info if provided and perform substitutions in the provided tag name.
+		stamped := stamper.Stamp(dst_s_tagged)
+		if stamped != dst_s_tagged {
+			log.Printf("Destination %s was resolved to %s after stamping.", dst_s_tagged, stamped)
+		}
 
-	digestStr := ""
-	if !strings.Contains(stamped, "@") {
-		digestStr = fmt.Sprintf(" - %s@%s", strings.Split(stamped, ":")[0], digest)
-	}
+		digest, err := img.Digest()
+		if err != nil {
+			log.Printf("Failed to digest image: %v", err)
+		}
 
-	log.Printf("Successfully pushed %s image to %s%s", *format, stamped, digestStr)
+		if err := push(stamped, img); err != nil {
+			log.Fatalf("Error pushing image to %s: %v", stamped, err)
+		}
+
+		digestStr := ""
+		if !strings.Contains(stamped, "@") {
+			digestStr = fmt.Sprintf(" - %s@%s", strings.Split(stamped, ":")[0], digest)
+		}
+
+		log.Printf("Successfully pushed %s image to %s%s", *format, stamped, digestStr)
+	}
 }
 
 // digestExists checks whether an image's digest exists in a repository.
